@@ -34,10 +34,13 @@ from lwc610_protocol import (
     mm_to_dots,
 )
 from lwc610_render import (
+    FONT_CATALOG,
+    FONT_CATEGORIES,
     FRAME_STYLES,
     LINE_RATIO_MODES,
     WINDOWS_FONT_MAP,
     LabelDesign,
+    get_fonts_for_category,
     render_label_bitmap,
     render_preview_image,
 )
@@ -66,7 +69,8 @@ class LWC610App:
         self.error_info_var = tk.StringVar(value="-")
         self.raw_info_var = tk.StringVar(value="-")
 
-        self.font_name_var = tk.StringVar(value="맑은 고딕 (Malgun Gothic)")
+        self.font_category_var = tk.StringVar(value=FONT_CATEGORIES[0])
+        self.font_name_var = tk.StringVar(value="[고딕] 맑은 고딕 (Malgun Gothic)")
         self.auto_size_var = tk.BooleanVar(value=True)
         self.font_size_var = tk.IntVar(value=84)
         self.bold_var = tk.BooleanVar(value=True)
@@ -266,23 +270,39 @@ class LWC610App:
         self.text_editor.bind("<KeyRelease>", lambda _e: self._on_text_editor_changed())
 
         # 2. Font & Frame Style Card
-        style_card = ttk.LabelFrame(left_col, text="2. 글꼴 및 테두리 스타일", padding=10)
+        style_card = ttk.LabelFrame(left_col, text="2. 글꼴(70종+ 한글/영문/손글씨) 및 테두리 스타일", padding=10)
         style_card.pack(fill=tk.X, pady=(0, 8))
         style_card.columnconfigure(1, weight=1)
 
-        ttk.Label(style_card, text="글꼴(Font):").grid(row=0, column=0, sticky=tk.W, pady=3)
-        font_combo = ttk.Combobox(
+        ttk.Label(style_card, text="글꼴 분류:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        cat_row = ttk.Frame(style_card)
+        cat_row.grid(row=0, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=2)
+        self.font_cat_combo = ttk.Combobox(
+            cat_row,
+            textvariable=self.font_category_var,
+            values=FONT_CATEGORIES,
+            state="readonly",
+            width=18,
+        )
+        self.font_cat_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self.font_cat_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_font_category_changed())
+        ttk.Button(cat_row, text="◀ 이전", width=6, command=lambda: self._step_font(-1)).pack(side=tk.LEFT, padx=1)
+        ttk.Button(cat_row, text="다음 ▶", width=6, command=lambda: self._step_font(1)).pack(side=tk.LEFT, padx=(1, 4))
+        ttk.Button(cat_row, text="폰트파일...", width=9, command=self._browse_font_file).pack(side=tk.LEFT)
+
+        ttk.Label(style_card, text="글꼴 선택:").grid(row=1, column=0, sticky=tk.W, pady=3)
+        self.font_combo = ttk.Combobox(
             style_card,
             textvariable=self.font_name_var,
-            values=list(WINDOWS_FONT_MAP.keys()),
+            values=get_fonts_for_category(FONT_CATEGORIES[0]),
             state="readonly",
         )
-        font_combo.grid(row=0, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=3)
-        font_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_preview())
+        self.font_combo.grid(row=1, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=3)
+        self.font_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_preview())
 
-        ttk.Label(style_card, text="글자 크기:").grid(row=1, column=0, sticky=tk.W, pady=3)
+        ttk.Label(style_card, text="글자 크기:").grid(row=2, column=0, sticky=tk.W, pady=3)
         size_row = ttk.Frame(style_card)
-        size_row.grid(row=1, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=3)
+        size_row.grid(row=2, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=3)
         ttk.Checkbutton(
             size_row,
             text="테이프 폭에 자동 맞춤",
@@ -303,23 +323,23 @@ class LWC610App:
         self.spin_font_size.pack(side=tk.LEFT, padx=4)
         self.spin_font_size.bind("<KeyRelease>", lambda _e: self.update_preview())
 
-        ttk.Label(style_card, text="스타일/정렬:").grid(row=2, column=0, sticky=tk.W, pady=3)
+        ttk.Label(style_card, text="스타일/정렬:").grid(row=3, column=0, sticky=tk.W, pady=3)
         opt_row = ttk.Frame(style_card)
-        opt_row.grid(row=2, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=3)
+        opt_row.grid(row=3, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=3)
         ttk.Checkbutton(opt_row, text="굵게(Bold)", variable=self.bold_var, command=self.update_preview).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Checkbutton(opt_row, text="흑백 반전", variable=self.invert_var, command=self.update_preview).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Radiobutton(opt_row, text="좌측", value="left", variable=self.align_var, command=self.update_preview).pack(side=tk.LEFT, padx=2)
         ttk.Radiobutton(opt_row, text="가운데", value="center", variable=self.align_var, command=self.update_preview).pack(side=tk.LEFT, padx=2)
         ttk.Radiobutton(opt_row, text="우측", value="right", variable=self.align_var, command=self.update_preview).pack(side=tk.LEFT, padx=2)
 
-        ttk.Label(style_card, text="테두리(Frame):").grid(row=3, column=0, sticky=tk.W, pady=3)
+        ttk.Label(style_card, text="테두리(Frame):").grid(row=4, column=0, sticky=tk.W, pady=3)
         frame_combo = ttk.Combobox(
             style_card,
             textvariable=self.frame_var,
             values=FRAME_STYLES,
             state="readonly",
         )
-        frame_combo.grid(row=3, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=3)
+        frame_combo.grid(row=4, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=3)
         frame_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_preview())
 
         # 3. QR Code & Image Card
@@ -534,6 +554,40 @@ class LWC610App:
         else:
             self.spin_font_size.configure(state="normal")
         self.update_preview()
+
+    def _on_font_category_changed(self) -> None:
+        cat = self.font_category_var.get()
+        fonts = get_fonts_for_category(cat)
+        self.font_combo["values"] = fonts
+        if fonts and self.font_name_var.get() not in fonts:
+            self.font_name_var.set(fonts[0])
+        self.update_preview()
+
+    def _step_font(self, delta: int) -> None:
+        values = list(self.font_combo["values"])
+        if not values:
+            return
+        cur = self.font_name_var.get()
+        try:
+            idx = values.index(cur)
+        except ValueError:
+            idx = 0
+        new_idx = (idx + delta) % len(values)
+        self.font_name_var.set(values[new_idx])
+        self.update_preview()
+
+    def _browse_font_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="외부 글꼴 파일(.ttf, .otf, .ttc) 선택",
+            filetypes=[("글꼴 파일", "*.ttf;*.otf;*.ttc"), ("모든 파일", "*.*")],
+        )
+        if path:
+            values = list(self.font_combo["values"])
+            if path not in values:
+                values.insert(0, path)
+                self.font_combo["values"] = values
+            self.font_name_var.set(path)
+            self.update_preview()
 
     def _browse_image(self) -> None:
         path = filedialog.askopenfilename(

@@ -29,17 +29,155 @@ except ImportError:
     qrcode = None
 
 
-# Windows Korean & Latin Font Candidates
-WINDOWS_FONT_MAP: Dict[str, Tuple[str, str]] = {
-    "맑은 고딕 (Malgun Gothic)": ("malgun.ttf", "malgunbd.ttf"),
-    "굴림 (Gulim)": ("gulim.ttc", "gulim.ttc"),
-    "바탕 (Batang)": ("batang.ttc", "batang.ttc"),
-    "궁서 (Gungsuh)": ("gungsuh.ttc", "gungsuh.ttc"),
-    "Arial": ("arial.ttf", "arialbd.ttf"),
-    "Segoe UI": ("segoeui.ttf", "segoeuib.ttf"),
-    "Consolas (고정폭)": ("consola.ttf", "consolab.ttf"),
-    "Impact": ("impact.ttf", "impact.ttf"),
+# Bundled & Windows Korean/Latin Font Catalog
+# Each entry maps: display_name -> (category, regular_spec, bold_spec)
+# where a spec is either a filename, "filename::index" (for .ttc), or "filename::vf:weight"
+FONT_CATALOG: Dict[str, Tuple[str, str, str]] = {
+    # --- 1. 한글 고딕/기본 ---
+    "[고딕] 맑은 고딕 (Malgun Gothic)": ("한글 고딕/기본", "malgun.ttf", "malgunbd.ttf"),
+    "[고딕] 나눔고딕 (Nanum Gothic)": ("한글 고딕/기본", "NanumGothic-Regular.ttf", "NanumGothic-Bold.ttf"),
+    "[고딕] 나눔고딕 ExtraBold": ("한글 고딕/기본", "NanumGothic-ExtraBold.ttf", "NanumGothic-ExtraBold.ttf"),
+    "[고딕] 본고딕 (Noto Sans KR)": ("한글 고딕/기본", "NotoSansKR-VF.ttf::vf:Regular", "NotoSansKR-VF.ttf::vf:Bold"),
+    "[고딕] 본고딕 Black (Noto Sans KR Black)": ("한글 고딕/기본", "NotoSansKR-VF.ttf::vf:Black", "NotoSansKR-VF.ttf::vf:Black"),
+    "[고딕] 고운돋움 (Gowun Dodum)": ("한글 고딕/기본", "GowunDodum-Regular.ttf", "GowunDodum-Regular.ttf"),
+    "[고딕] 브리즈산스 (BreezeSans)": ("한글 고딕/기본", "BreezeSans-Medium_20150728.ttf", "BreezeSans-Bold_20150728.ttf"),
+    "[고딕] 돋움 (Dotum)": ("한글 고딕/기본", "gulim.ttc::2", "gulim.ttc::2"),
+    "[고딕] 돋움체 (DotumChe · 고정폭)": ("한글 고딕/기본", "gulim.ttc::3", "gulim.ttc::3"),
+    "[고딕] 굴림 (Gulim)": ("한글 고딕/기본", "gulim.ttc::0", "gulim.ttc::0"),
+    "[고딕] 굴림체 (GulimChe · 고정폭)": ("한글 고딕/기본", "gulim.ttc::1", "gulim.ttc::1"),
+    "[고딕] 새굴림 (New Gulim)": ("한글 고딕/기본", "NGULIM.TTF", "NGULIM.TTF"),
+    "[고딕] HY중고딕 (HYGothic-Medium)": ("한글 고딕/기본", "H2GTRM.TTF", "H2GTRM.TTF"),
+
+    # --- 2. 한글 굵은/타이틀/디자인 ---
+    "[타이틀] 검은고딕 (Black Han Sans · 초극태)": ("한글 굵은/타이틀", "BlackHanSans-Regular.ttf", "BlackHanSans-Regular.ttf"),
+    "[타이틀] 가석체 (Gasoek One · 슈퍼헤비)": ("한글 굵은/타이틀", "GasoekOne-Regular.ttf", "GasoekOne-Regular.ttf"),
+    "[타이틀] 도현체 (배민 도현체)": ("한글 굵은/타이틀", "DoHyeon-Regular.ttf", "DoHyeon-Regular.ttf"),
+    "[타이틀] 주아체 (배민 주아체 · 둥근타이틀)": ("한글 굵은/타이틀", "Jua-Regular.ttf", "Jua-Regular.ttf"),
+    "[타이틀] 베이글팻 (Bagel Fat One · 입체라운드)": ("한글 굵은/타이틀", "BagelFatOne-Regular.ttf", "BagelFatOne-Regular.ttf"),
+    "[타이틀] 오르빗 (Orbit · 레트로 SF)": ("한글 굵은/타이틀", "Orbit-Regular.ttf", "Orbit-Regular.ttf"),
+    "[타이틀] HY헤드라인M (굵은 제목체)": ("한글 굵은/타이틀", "H2HDRM.TTF", "H2HDRM.TTF"),
+    "[타이틀] HY견고딕 (진한 각진고딕)": ("한글 굵은/타이틀", "H2GTRE.TTF", "H2GTRE.TTF"),
+    "[타이틀] 휴먼둥근헤드라인 (둥근 제목체)": ("한글 굵은/타이틀", "HMKMRHD.TTF", "HMKMRHD.TTF"),
+    "[타이틀] HY그래픽M (그래픽 디자인체)": ("한글 굵은/타이틀", "H2GPRM.TTF", "H2GPRM.TTF"),
+    "[타이틀] HY목각파임B (입체 목각체)": ("한글 굵은/타이틀", "H2MKPB.TTF", "H2MKPB.TTF"),
+    "[타이틀] 휴먼모음T (모던 디자인체)": ("한글 굵은/타이틀", "HMFMMUEX.TTC::0", "HMFMMUEX.TTC::0"),
+
+    # --- 3. 한글 명조/바탕/궁서 ---
+    "[명조] 나눔명조 (Nanum Myeongjo)": ("한글 명조/궁서", "NanumMyeongjo-Regular.ttf", "NanumMyeongjo-Bold.ttf"),
+    "[명조] 고운바탕 (Gowun Batang)": ("한글 명조/궁서", "GowunBatang-Regular.ttf", "GowunBatang-Bold.ttf"),
+    "[명조] 본명조 (Noto Serif KR)": ("한글 명조/궁서", "NotoSerifKR-VF.ttf::vf:Regular", "NotoSerifKR-VF.ttf::vf:Bold"),
+    "[명조] 바탕 (Batang)": ("한글 명조/궁서", "batang.ttc::0", "batang.ttc::0"),
+    "[명조] 바탕체 (BatangChe · 고정폭)": ("한글 명조/궁서", "batang.ttc::1", "batang.ttc::1"),
+    "[궁서] 궁서 (Gungsuh · 정통 붓글씨)": ("한글 명조/궁서", "batang.ttc::2", "batang.ttc::2"),
+    "[궁서] 궁서체 (GungsuhChe · 고정폭)": ("한글 명조/궁서", "batang.ttc::3", "batang.ttc::3"),
+    "[궁서] HY궁서B (굵은 붓글씨)": ("한글 명조/궁서", "H2GSRB.TTF", "H2GSRB.TTF"),
+    "[명조] HY견명조 (굵은 명조체)": ("한글 명조/궁서", "H2MJRE.TTF", "H2MJRE.TTF"),
+    "[명조] HY신명조 (신명조체)": ("한글 명조/궁서", "H2MJSM.TTF", "H2MJSM.TTF"),
+    "[고전] 휴먼옛체 (고전 판본체)": ("한글 명조/궁서", "HMFMOLD.TTF", "HMFMOLD.TTF"),
+
+    # --- 4. 한글 손글씨/감성/귀여운체 ---
+    "[손글씨] 나눔손글씨 펜 (Nanum Pen)": ("한글 손글씨/감성", "NanumPenScript-Regular.ttf", "NanumPenScript-Regular.ttf"),
+    "[손글씨] 나눔손글씨 붓 (Nanum Brush)": ("한글 손글씨/감성", "NanumBrushScript-Regular.ttf", "NanumBrushScript-Regular.ttf"),
+    "[손글씨] 연성체 (배민 연성체 · 붓펜)": ("한글 손글씨/감성", "YeonSung-Regular.ttf", "YeonSung-Regular.ttf"),
+    "[손글씨] 개구쟁이체 (Gaegu)": ("한글 손글씨/감성", "Gaegu-Regular.ttf", "Gaegu-Bold.ttf"),
+    "[손글씨] 동글체 (Dongle · 둥근귀염체)": ("한글 손글씨/감성", "Dongle-Bold.ttf", "Dongle-Bold.ttf"),
+    "[손글씨] 푸어스토리 (Poor Story · 동화체)": ("한글 손글씨/감성", "PoorStory-Regular.ttf", "PoorStory-Regular.ttf"),
+    "[손글씨] 하이멜로디 (Hi Melody)": ("한글 손글씨/감성", "HiMelody-Regular.ttf", "HiMelody-Regular.ttf"),
+    "[손글씨] 싱글데이 (Single Day · 다이어리)": ("한글 손글씨/감성", "SingleDay-Regular.ttf", "SingleDay-Regular.ttf"),
+    "[손글씨] 휴먼매직체 (매직 손글씨)": ("한글 손글씨/감성", "HMKMMAG.TTF", "HMKMMAG.TTF"),
+    "[손글씨] 휴먼편지체 (편지 손글씨)": ("한글 손글씨/감성", "HMFMPYUN.TTF", "HMFMPYUN.TTF"),
+    "[손글씨] 휴먼아미체 (가는 손글씨)": ("한글 손글씨/감성", "HMKMAMI.TTF", "HMKMAMI.TTF"),
+    "[손글씨] HY엽서체M (둥근 엽서체)": ("한글 손글씨/감성", "H2PORM.TTF", "H2PORM.TTF"),
+    "[손글씨] HY얕은샘물M (샘물 손글씨)": ("한글 손글씨/감성", "H2SA1M.TTF", "H2SA1M.TTF"),
+
+    # --- 5. 영문/숫자 전용 디자인 ---
+    "[영문] Arial": ("영문/숫자", "arial.ttf", "arialbd.ttf"),
+    "[영문] Arial Black (초극태 영문)": ("영문/숫자", "ariblk.ttf", "ariblk.ttf"),
+    "[영문] Arial Rounded Bold (둥근 영문)": ("영문/숫자", "ARLRDBD.TTF", "ARLRDBD.TTF"),
+    "[영문] Segoe UI": ("영문/숫자", "segoeui.ttf", "segoeuib.ttf"),
+    "[영문] Segoe UI Black": ("영문/숫자", "seguibl.ttf", "seguibl.ttf"),
+    "[영문] Consolas (고정폭 코딩체)": ("영문/숫자", "consola.ttf", "consolab.ttf"),
+    "[영문] Eco Sans Mono (고정폭)": ("영문/숫자", "EcoSansMono.ttf", "EcoSansMonoBd.ttf"),
+    "[영문] OCR-A Extended (기계식 시리얼번호)": ("영문/숫자", "OCRAEXT.TTF", "OCRAEXT.TTF"),
+    "[영문] Impact (임팩트 타이틀)": ("영문/숫자", "impact.ttf", "impact.ttf"),
+    "[영문] Cooper Black (레트로 라운드)": ("영문/숫자", "COOPBL.TTF", "COOPBL.TTF"),
+    "[영문] Stencil (군용 스텐실)": ("영문/숫자", "STENCIL.TTF", "STENCIL.TTF"),
+    "[영문] Showcard Gothic": ("영문/숫자", "SHOWG.TTF", "SHOWG.TTF"),
+    "[영문] Bauhaus 93": ("영문/숫자", "BAUHS93.TTF", "BAUHS93.TTF"),
+    "[영문] Century Gothic": ("영문/숫자", "GOTHIC.TTF", "GOTHICB.TTF"),
+    "[영문] Rockwell (슬랩 세리프)": ("영문/숫자", "ROCK.TTF", "ROCKB.TTF"),
+    "[영문] Trebuchet MS": ("영문/숫자", "trebuc.ttf", "trebucbd.ttf"),
+    "[영문] Verdana": ("영문/숫자", "verdana.ttf", "verdanab.ttf"),
+    "[영문] Georgia": ("영문/숫자", "georgia.ttf", "georgiab.ttf"),
+    "[영문] Times New Roman": ("영문/숫자", "times.ttf", "timesbd.ttf"),
+    "[영문] Segoe Print (영문 손글씨)": ("영문/숫자", "segoepr.ttf", "segoeprb.ttf"),
+    "[영문] Segoe Script (영문 필기체)": ("영문/숫자", "segoesc.ttf", "segoescb.ttf"),
+    "[영문] Ink Free (영문 펜글씨)": ("영문/숫자", "Inkfree.ttf", "Inkfree.ttf"),
+    "[영문] Brush Script MT (영문 붓펜)": ("영문/숫자", "BRUSHSCI.TTF", "BRUSHSCI.TTF"),
 }
+
+# Backwards-compatible alias mapping display_name -> (regular_spec, bold_spec)
+WINDOWS_FONT_MAP: Dict[str, Tuple[str, str]] = {
+    name: (reg, bld) for name, (_cat, reg, bld) in FONT_CATALOG.items()
+}
+# Also keep legacy unprefixed names working seamlessly
+WINDOWS_FONT_MAP["맑은 고딕 (Malgun Gothic)"] = ("malgun.ttf", "malgunbd.ttf")
+WINDOWS_FONT_MAP["굴림 (Gulim)"] = ("gulim.ttc::0", "gulim.ttc::0")
+WINDOWS_FONT_MAP["바탕 (Batang)"] = ("batang.ttc::0", "batang.ttc::0")
+WINDOWS_FONT_MAP["궁서 (Gungsuh)"] = ("batang.ttc::2", "batang.ttc::2")
+
+FONT_CATEGORIES = [
+    "전체 추천 글꼴",
+    "한글 고딕/기본",
+    "한글 굵은/타이틀",
+    "한글 명조/궁서",
+    "한글 손글씨/감성",
+    "영문/숫자",
+    "PC 설치 전체 글꼴",
+]
+
+_SYSTEM_FONTS_CACHE: Optional[Dict[str, str]] = None
+
+
+def get_all_system_fonts() -> Dict[str, str]:
+    """Scan Windows & user Fonts folders for all installed .ttf/.ttc/.otf files."""
+    global _SYSTEM_FONTS_CACHE
+    if _SYSTEM_FONTS_CACHE is not None:
+        return _SYSTEM_FONTS_CACHE
+
+    found: Dict[str, str] = {}
+    search_dirs = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts"),
+        os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Fonts"),
+    ]
+    for d in search_dirs:
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.lower().endswith((".ttf", ".ttc", ".otf")):
+                continue
+            full_path = os.path.join(d, fn)
+            try:
+                f = ImageFont.truetype(full_path, 20)
+                fam, sty = f.getname()
+                label = f"[시스템] {fam} ({sty}) - {fn}"
+                found[label] = full_path
+            except Exception:
+                continue
+
+    _SYSTEM_FONTS_CACHE = found
+    return found
+
+
+def get_fonts_for_category(category: str = "전체 추천 글꼴") -> List[str]:
+    """Return list of font display names matching the requested category."""
+    if category == "전체 추천 글꼴" or not category:
+        return list(FONT_CATALOG.keys())
+    if category == "PC 설치 전체 글꼴":
+        sys_fonts = get_all_system_fonts()
+        return list(FONT_CATALOG.keys()) + list(sys_fonts.keys())
+    return [name for name, (cat, _r, _b) in FONT_CATALOG.items() if cat == category]
 
 FRAME_STYLES = [
     "없음 (None)",
@@ -81,25 +219,87 @@ class LabelDesign:
     inner_padding_mm: float = 2.5
 
 
+def _open_font_spec(spec: str, size_px: int, font_dirs: List[str]) -> Optional[ImageFont.FreeTypeFont]:
+    """Open a font spec ('filename.ttf', 'file.ttc::2', 'file.ttf::vf:Bold', or absolute path)."""
+    if not spec:
+        return None
+
+    ttc_index = 0
+    vf_variation: Optional[str] = None
+    raw_file = spec
+
+    if "::vf:" in spec:
+        raw_file, vf_variation = spec.split("::vf:", 1)
+    elif "::" in spec:
+        raw_file, idx_str = spec.split("::", 1)
+        try:
+            ttc_index = int(idx_str)
+        except Exception:
+            ttc_index = 0
+
+    candidate_paths: List[str] = []
+    if os.path.isabs(raw_file) and os.path.exists(raw_file):
+        candidate_paths.append(raw_file)
+    else:
+        for d in font_dirs:
+            p = os.path.join(d, raw_file)
+            if os.path.exists(p):
+                candidate_paths.append(p)
+
+    for path in candidate_paths:
+        try:
+            font = ImageFont.truetype(path, max(8, int(size_px)), index=ttc_index)
+            if vf_variation:
+                try:
+                    font.set_variation_by_name(vf_variation.encode("ascii"))
+                except Exception:
+                    pass
+            return font
+        except Exception:
+            continue
+    return None
+
+
 def load_font(font_name: str, size_px: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Load a TrueType font from C:\\Windows\\Fonts with fallback."""
-    fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
-    regular_file, bold_file = WINDOWS_FONT_MAP.get(
-        font_name, ("malgun.ttf", "malgunbd.ttf")
-    )
-    chosen = bold_file if bold else regular_file
-    candidates = [
-        os.path.join(fonts_dir, chosen),
-        os.path.join(fonts_dir, regular_file),
-        os.path.join(fonts_dir, "malgunbd.ttf" if bold else "malgun.ttf"),
-        os.path.join(fonts_dir, "arial.ttf"),
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, max(8, int(size_px)))
-            except Exception:
-                continue
+    """Load a TrueType/OpenType font from bundled `./fonts`, Windows Fonts, or direct file path."""
+    local_fonts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+    win_fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    user_fonts_dir = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Fonts")
+    font_dirs = [local_fonts_dir, win_fonts_dir, user_fonts_dir]
+
+    # 1. Direct file path (custom loaded .ttf/.otf/.ttc)
+    if font_name and os.path.exists(font_name):
+        f = _open_font_spec(font_name, size_px, font_dirs)
+        if f is not None:
+            return f
+
+    # 2. System font selected from `[시스템] ...`
+    if font_name and font_name.startswith("[시스템]"):
+        sys_map = get_all_system_fonts()
+        sys_path = sys_map.get(font_name)
+        if sys_path:
+            f = _open_font_spec(sys_path, size_px, font_dirs)
+            if f is not None:
+                return f
+
+    # 3. Catalog / WINDOWS_FONT_MAP lookup (including substring match for CLI convenience)
+    specs = WINDOWS_FONT_MAP.get(font_name)
+    if specs is None and font_name:
+        for k, v in WINDOWS_FONT_MAP.items():
+            if font_name.lower() in k.lower():
+                specs = v
+                break
+    if specs is None:
+        specs = ("malgun.ttf", "malgunbd.ttf")
+
+    regular_spec, bold_spec = specs
+    chosen = bold_spec if bold else regular_spec
+
+    for spec in (chosen, regular_spec, "malgunbd.ttf" if bold else "malgun.ttf", "arial.ttf"):
+        f = _open_font_spec(spec, size_px, font_dirs)
+        if f is not None:
+            return f
+
     return ImageFont.load_default()
 
 
