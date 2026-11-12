@@ -195,6 +195,23 @@ LINE_RATIO_MODES = [
 
 
 @dataclass
+class LabelObject:
+    """A positioned element inside a structured label layout."""
+    obj_type: str = "text"  # "text", "qr", "image", "box", "hline", "vline"
+    content: str = ""       # text content, column reference like "{Name}", or file path
+    x_mm: float = 0.0       # horizontal offset in mm from left inner padding
+    y_mm: float = 0.0       # vertical offset in mm from top printable edge
+    width_mm: float = 0.0   # 0.0 = auto
+    height_mm: float = 0.0  # 0.0 = auto
+    font_name: str = "맑은 고딕 (Malgun Gothic)"
+    font_size_px: int = 36
+    bold: bool = False
+    invert: bool = False
+    align: str = "left"     # "left", "center", "right"
+    qr_pos: str = "left"
+
+
+@dataclass
 class LabelDesign:
     """Parameters defining a label to be rendered at 360 DPI."""
     text: str = "안녕하세요 LW-C610"
@@ -217,6 +234,7 @@ class LabelDesign:
     margin_mm: float = 0.0
     lead_offset_mm: float = 0.0
     inner_padding_mm: float = 2.5
+    objects: Optional[List[LabelObject]] = None
 
 
 def _open_font_spec(spec: str, size_px: int, font_dirs: List[str]) -> Optional[ImageFont.FreeTypeFont]:
@@ -519,12 +537,144 @@ def _load_custom_image(image_path: str, target_height: int, dither: bool = False
         return None
 
 
-def render_label_bitmap(design: LabelDesign) -> Image.Image:
+def render_objects_label_bitmap(
+    objects: List[LabelObject],
+    tape_code: int = 4,
+    frame_style: str = "없음 (None)",
+    fixed_length_mm: float = 0.0,
+    inner_padding_mm: float = 2.5,
+    row_data: Optional[Dict[str, str]] = None,
+    invert_colors: bool = False,
+) -> Image.Image:
+    """
+    Render a label composed of freely positioned elements (text, QR, images, lines, boxes),
+    supporting dynamic variable substitution from CSV row dictionaries (e.g. '{Name}', '{Code}').
+    """
+    row_data = row_data or {}
+    printable_dots = TAPE_PRINTABLE_DOTS.get(tape_code, 144)
+    has_frame = frame_style != "없음 (None)" and not frame_style.startswith("없음")
+    frame_inset = max(8, printable_dots // 12) if has_frame else 4
+    avail_height = max(16, printable_dots - frame_inset * 2)
+    pad_x = max(16, mm_to_dots(inner_padding_mm))
+    if has_frame:
+        pad_x = max(pad_x, printable_dots // 5)
+
+    def _resolve_template(tmpl: str) -> str:
+        s = tmpl
+        for k, v in row_data.items():
+            s = s.replace(f"{{{k}}}", str(v))
+        return s
+
+    rendered_items: List[Tuple[Image.Image, int, int]] = []
+    max_right_dots = pad_x
+
+    for obj in objects:
+        rendered_content = _resolve_template(obj.content)
+        obj_x = pad_x + max(0, mm_to_dots(obj.x_mm))
+        obj_y = frame_inset + max(0, mm_to_dots(obj.y_mm))
+
+        if obj.obj_type == "text":
+            if not rendered_content.strip():
+                continue
+            font = load_font(obj.font_name, obj.font_size_px, bold=obj.bold)
+            t_img = _render_single_line_tight(rendered_content, font)
+            if t_img is None:
+                continue
+            if obj.invert:
+                t_img = ImageOps.invert(t_img)
+            rendered_items.append((t_img, obj_x, obj_y))
+            max_right_dots = max(max_right_dots, obj_x + t_img.width)
+
+        elif obj.obj_type == "qr":
+            if not rendered_content.strip():
+                continue
+            target_side = max(24, mm_to_dots(obj.height_mm) if obj.height_mm > 0 else avail_height)
+            qr_img = _make_qr_bitmap(rendered_content, target_side)
+            if qr_img is not None:
+                rendered_items.append((qr_img, obj_x, obj_y))
+                max_right_dots = max(max_right_dots, obj_x + qr_img.width)
+
+        elif obj.obj_type == "image":
+            target_h = max(16, mm_to_dots(obj.height_mm) if obj.height_mm > 0 else avail_height)
+            img = _load_custom_image(rendered_content, target_h)
+            if img is not None:
+                rendered_items.append((img, obj_x, obj_y))
+                max_right_dots = max(max_right_dots, obj_x + img.width)
+
+        elif obj.obj_type == "box":
+            box_w = max(4, mm_to_dots(obj.width_mm) if obj.width_mm > 0 else 40)
+            box_h = max(4, mm_to_dots(obj.height_mm) if obj.height_mm > 0 else avail_height)
+            box_img = Image.new("L", (box_w, box_h), 255)
+            bdraw = ImageDraw.Draw(box_img)
+            bdraw.rectangle([0, 0, box_w - 1, box_h - 1], outline=0, width=2)
+            rendered_items.append((box_img, obj_x, obj_y))
+            max_right_dots = max(max_right_dots, obj_x + box_w)
+
+        elif obj.obj_type == "vline":
+            line_h = max(4, mm_to_dots(obj.height_mm) if obj.height_mm > 0 else avail_height)
+            line_img = Image.new("L", (3, line_h), 255)
+            ldraw = ImageDraw.Draw(line_img)
+            ldraw.line([(1, 0), (1, line_h - 1)], fill=0, width=2)
+            rendered_items.append((line_img, obj_x, obj_y))
+            max_right_dots = max(max_right_dots, obj_x + 3)
+
+        elif obj.obj_type == "hline":
+            line_w = max(4, mm_to_dots(obj.width_mm) if obj.width_mm > 0 else 60)
+            line_img = Image.new("L", (line_w, 3), 255)
+            ldraw = ImageDraw.Draw(line_img)
+            ldraw.line([(0, 1), (line_w - 1, 1)], fill=0, width=2)
+            rendered_items.append((line_img, obj_x, obj_y))
+            max_right_dots = max(max_right_dots, obj_x + line_w)
+
+    total_w = max(72, max_right_dots + pad_x)
+    if fixed_length_mm > 0:
+        total_w = max(total_w, mm_to_dots(fixed_length_mm))
+
+    canvas = Image.new("L", (total_w, printable_dots), 255)
+    for img, x, y in rendered_items:
+        # Prevent pasting out of bottom bound
+        cy = max(0, min(printable_dots - img.height, y))
+        canvas.paste(img, (x, cy))
+
+    if has_frame:
+        rect = [1, 1, total_w - 2, printable_dots - 2]
+        stroke = max(2, printable_dots // 36)
+        draw = ImageDraw.Draw(canvas)
+        if "직사각형" in frame_style:
+            draw.rectangle(rect, outline=0, width=stroke)
+        elif "둥근" in frame_style:
+            radius = max(8, printable_dots // 5)
+            draw.rounded_rectangle(rect, radius=radius, outline=0, width=stroke)
+        elif "굵은" in frame_style:
+            draw.rectangle(rect, outline=0, width=max(4, stroke * 2))
+        elif "캡슐" in frame_style:
+            radius = (printable_dots - 4) // 2
+            draw.rounded_rectangle(rect, radius=radius, outline=0, width=stroke)
+
+    if invert_colors:
+        canvas = ImageOps.invert(canvas)
+
+    return canvas
+
+
+def render_label_bitmap(design: LabelDesign, row_data: Optional[Dict[str, str]] = None) -> Image.Image:
     """
     Render the printable label content bitmap (horizontal orientation:
       height = printable_dots for design.tape_code,
       width  = content length in dots along the tape).
+    Supports structured multi-object layouts as well as standard flowing layouts.
     """
+    if design.objects:
+        return render_objects_label_bitmap(
+            objects=design.objects,
+            tape_code=design.tape_code,
+            frame_style=design.frame_style,
+            fixed_length_mm=design.fixed_length_mm,
+            inner_padding_mm=design.inner_padding_mm,
+            row_data=row_data,
+            invert_colors=design.invert_colors,
+        )
+
     printable_dots = TAPE_PRINTABLE_DOTS.get(design.tape_code, 144)
     has_frame = design.frame_style != "없음 (None)" and not design.frame_style.startswith("없음")
 

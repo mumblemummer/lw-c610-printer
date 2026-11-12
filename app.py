@@ -15,12 +15,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime
+import os
 import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageTk
 
@@ -40,6 +42,7 @@ from lwc610_render import (
     LINE_RATIO_MODES,
     WINDOWS_FONT_MAP,
     LabelDesign,
+    LabelObject,
     get_fonts_for_category,
     render_label_bitmap,
     render_preview_image,
@@ -89,6 +92,15 @@ class LWC610App:
         self.qr_pos_var = tk.StringVar(value="left")
         self.image_path_var = tk.StringVar(value="")
         self.image_dither_var = tk.BooleanVar(value=False)
+
+        # CSV Batch & Object Layout State
+        self.csv_path_var = tk.StringVar(value="")
+        self.csv_headers: List[str] = []
+        self.csv_rows: List[Dict[str, str]] = []
+        self.csv_current_index = 0
+        self.csv_status_var = tk.StringVar(value="CSV 파일을 불러와 다중 열 객체 배치를 구성하세요.")
+        self.csv_objects: List[LabelObject] = []
+        self.csv_preview_row_var = tk.StringVar(value="")
 
         self.tape_override_var = tk.StringVar(value="자동 감지 (프린터 기준)")
         self.margin_mm_var = tk.DoubleVar(value=0.0)
@@ -189,10 +201,21 @@ class LWC610App:
         right_col = ttk.Frame(main_pane)
         right_col.grid(row=0, column=1, sticky="nsew")
 
-        # --- LEFT COLUMN: Text, Font, QR/Image, and Print Settings ---
+        # Left Column Layout: Notebook with Tab 1 (일반/2줄 라벨) and Tab 2 (CSV 다중/객체 라벨)
+        left_notebook = ttk.Notebook(left_col)
+        left_notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        tab_manual = ttk.Frame(left_notebook)
+        tab_csv = ttk.Frame(left_notebook)
+        left_notebook.add(tab_manual, text="  ✏️ 일반 / 2줄 라벨  ")
+        left_notebook.add(tab_csv, text="  📊 CSV 다중 출력 (객체 배치)  ")
+        self.left_notebook = left_notebook
+        self.left_notebook.bind("<<NotebookTabChanged>>", lambda _e: self.update_preview())
+
+        # --- TAB 1 (일반 / 2줄 라벨) ---
         # 1. Text Input Card (1-line / 2-line / multi-line)
-        text_card = ttk.LabelFrame(left_col, text="1. 라벨 텍스트 입력 (1줄 / 2줄 전용 입력 & 다중 행)", padding=10)
-        text_card.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        text_card = ttk.LabelFrame(tab_manual, text="1. 라벨 텍스트 입력 (1줄 / 2줄 전용 입력 & 다중 행)", padding=10)
+        text_card.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
 
         tpl_bar = ttk.Frame(text_card)
         tpl_bar.pack(fill=tk.X, pady=(0, 6))
@@ -270,8 +293,8 @@ class LWC610App:
         self.text_editor.bind("<KeyRelease>", lambda _e: self._on_text_editor_changed())
 
         # 2. Font & Frame Style Card
-        style_card = ttk.LabelFrame(left_col, text="2. 글꼴(70종+ 한글/영문/손글씨) 및 테두리 스타일", padding=10)
-        style_card.pack(fill=tk.X, pady=(0, 8))
+        style_card = ttk.LabelFrame(tab_manual, text="2. 글꼴(70종+ 한글/영문/손글씨) 및 테두리 스타일", padding=10)
+        style_card.pack(fill=tk.X, pady=(0, 6))
         style_card.columnconfigure(1, weight=1)
 
         ttk.Label(style_card, text="글꼴 분류:").grid(row=0, column=0, sticky=tk.W, pady=2)
@@ -343,8 +366,8 @@ class LWC610App:
         frame_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_preview())
 
         # 3. QR Code & Image Card
-        extra_card = ttk.LabelFrame(left_col, text="3. QR 코드 및 이미지 삽입 (선택)", padding=10)
-        extra_card.pack(fill=tk.X, pady=(0, 8))
+        extra_card = ttk.LabelFrame(tab_manual, text="3. QR 코드 및 이미지 삽입 (선택)", padding=10)
+        extra_card.pack(fill=tk.X, pady=(0, 4))
         extra_card.columnconfigure(1, weight=1)
 
         ttk.Label(extra_card, text="QR 데이터:").grid(row=0, column=0, sticky=tk.W, pady=3)
@@ -367,6 +390,9 @@ class LWC610App:
         ttk.Button(img_btn_box, text="찾아보기", width=8, command=self._browse_image).pack(side=tk.LEFT, padx=(0, 3))
         ttk.Button(img_btn_box, text="제거", width=5, command=self._clear_image).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Checkbutton(img_btn_box, text="디더링", variable=self.image_dither_var, command=self.update_preview).pack(side=tk.LEFT)
+
+        # --- TAB 2 (CSV 다중 출력 & 객체 배치) ---
+        self._build_csv_tab(tab_csv)
 
         # 4. Print Parameters Card
         param_card = ttk.LabelFrame(left_col, text="4. 테이프 및 인쇄 옵션 (360 DPI)", padding=10)
@@ -494,31 +520,47 @@ class LWC610App:
 
         self.btn_print = tk.Button(
             btn_row,
-            text="🖨️ 라벨 인쇄하기 (Print)",
+            text="🖨️ 현재 라벨 인쇄 (Print)",
             font=("Malgun Gothic", 11, "bold"),
             bg="#0284C7",
             fg="#FFFFFF",
             activebackground="#0369A1",
             activeforeground="#FFFFFF",
             relief=tk.FLAT,
-            padx=18,
+            padx=14,
             pady=8,
             cursor="hand2",
             command=self.print_label_async,
         )
-        self.btn_print.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        self.btn_print.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        self.btn_csv_batch_print = tk.Button(
+            btn_row,
+            text="📑 CSV 일괄 인쇄",
+            font=("Malgun Gothic", 10, "bold"),
+            bg="#059669",
+            fg="#FFFFFF",
+            activebackground="#047857",
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            padx=12,
+            pady=8,
+            cursor="hand2",
+            command=self.print_csv_batch_async,
+        )
+        self.btn_csv_batch_print.pack(side=tk.LEFT, padx=(0, 6))
 
         self.btn_feed_cut = ttk.Button(
             btn_row,
-            text="✂️ 테이프 피드 & 커트",
+            text="✂️ 피드 & 커트",
             style="Action.TButton",
             command=lambda: self.feed_tape_async(cut=True),
         )
-        self.btn_feed_cut.pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_feed_cut.pack(side=tk.LEFT, padx=(0, 4))
 
         self.btn_feed_only = ttk.Button(
             btn_row,
-            text="⏩ 테이프 피드만",
+            text="⏩ 피드만",
             style="Action.TButton",
             command=lambda: self.feed_tape_async(cut=False),
         )
@@ -634,7 +676,315 @@ class LWC610App:
             self._syncing_text = False
         self.update_preview()
 
-    def _set_text_lines(self, text: str) -> None:
+    def _build_csv_tab(self, parent: ttk.Frame) -> None:
+        """Construct the CSV Data & Object-Based Layout editor tab."""
+        # Top CSV File Loader & Row Navigator
+        file_box = ttk.LabelFrame(parent, text="CSV 데이터 파일 불러오기", padding=8)
+        file_box.pack(fill=tk.X, pady=(0, 6))
+
+        row1 = ttk.Frame(file_box)
+        row1.pack(fill=tk.X, pady=(0, 4))
+        self.entry_csv_path = ttk.Entry(row1, textvariable=self.csv_path_var)
+        self.entry_csv_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        ttk.Button(row1, text="CSV 파일 열기...", command=self._browse_csv_file).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(row1, text="샘플 CSV 로드", command=self._load_sample_csv).pack(side=tk.LEFT)
+
+        nav_row = ttk.Frame(file_box)
+        nav_row.pack(fill=tk.X)
+        ttk.Label(nav_row, textvariable=self.csv_status_var, foreground="#0369A1", font=("Malgun Gothic", 9, "bold")).pack(side=tk.LEFT)
+        nav_btns = ttk.Frame(nav_row)
+        nav_btns.pack(side=tk.RIGHT)
+        ttk.Button(nav_btns, text="◀ 이전 행", width=8, command=lambda: self._step_csv_row(-1)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(nav_btns, text="다음 행 ▶", width=8, command=lambda: self._step_csv_row(1)).pack(side=tk.LEFT, padx=2)
+
+        # Object Placement & Template Designer Card
+        designer_box = ttk.LabelFrame(parent, text="라벨 객체 배치 (각 열의 위치 X/Y, 크기, 폰트 자유 지정)", padding=8)
+        designer_box.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+
+        # Quick preset buttons for CSV layouts
+        preset_bar = ttk.Frame(designer_box)
+        preset_bar.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(preset_bar, text="배치 템플릿:").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(preset_bar, text="QR+2줄명찰", command=lambda: self._apply_csv_preset("qr_2line")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset_bar, text="3열 나란히", command=lambda: self._apply_csv_preset("3col")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset_bar, text="품명+바코드/시리얼", command=lambda: self._apply_csv_preset("asset")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset_bar, text="객체 초기화", command=self._clear_csv_objects).pack(side=tk.RIGHT)
+
+        # Available CSV Columns clickable tag buttons
+        col_frame = ttk.Frame(designer_box)
+        col_frame.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(col_frame, text="클릭하여 열 삽입:").pack(side=tk.LEFT, padx=(0, 4))
+        self.col_tags_box = ttk.Frame(col_frame)
+        self.col_tags_box.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Treeview list of objects on the label
+        tree_frame = ttk.Frame(designer_box)
+        tree_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        self.obj_tree = ttk.Treeview(
+            tree_frame,
+            columns=("type", "content", "x", "y", "size", "font", "bold"),
+            show="headings",
+            height=5,
+        )
+        self.obj_tree.heading("type", text="종류")
+        self.obj_tree.heading("content", text="내용 / 열 템플릿")
+        self.obj_tree.heading("x", text="X (mm)")
+        self.obj_tree.heading("y", text="Y (mm)")
+        self.obj_tree.heading("size", text="크기(px/mm)")
+        self.obj_tree.heading("font", text="글꼴")
+        self.obj_tree.heading("bold", text="굵게")
+
+        self.obj_tree.column("type", width=65, anchor=tk.CENTER)
+        self.obj_tree.column("content", width=190, anchor=tk.W)
+        self.obj_tree.column("x", width=60, anchor=tk.CENTER)
+        self.obj_tree.column("y", width=60, anchor=tk.CENTER)
+        self.obj_tree.column("size", width=75, anchor=tk.CENTER)
+        self.obj_tree.column("font", width=140, anchor=tk.W)
+        self.obj_tree.column("bold", width=50, anchor=tk.CENTER)
+
+        tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.obj_tree.yview)
+        self.obj_tree.configure(yscrollcommand=tree_scroll.set)
+        self.obj_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.obj_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_obj_selected())
+
+        # Object Editor Controls (Add / Update / Delete)
+        edit_card = ttk.Frame(designer_box)
+        edit_card.pack(fill=tk.X)
+
+        r1 = ttk.Frame(edit_card)
+        r1.pack(fill=tk.X, pady=2)
+        ttk.Label(r1, text="종류:").pack(side=tk.LEFT)
+        self.obj_type_var = tk.StringVar(value="text")
+        cb_type = ttk.Combobox(r1, textvariable=self.obj_type_var, values=["text", "qr", "image", "box", "vline", "hline"], width=7, state="readonly")
+        cb_type.pack(side=tk.LEFT, padx=(2, 8))
+
+        ttk.Label(r1, text="내용({열이름} 사용가능):").pack(side=tk.LEFT)
+        self.obj_content_var = tk.StringVar(value="{품명}")
+        self.entry_obj_content = ttk.Entry(r1, textvariable=self.obj_content_var)
+        self.entry_obj_content.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        r2 = ttk.Frame(edit_card)
+        r2.pack(fill=tk.X, pady=2)
+        ttk.Label(r2, text="X(mm):").pack(side=tk.LEFT)
+        self.obj_x_var = tk.DoubleVar(value=0.0)
+        ttk.Spinbox(r2, from_=0.0, to=150.0, increment=0.5, textvariable=self.obj_x_var, width=5).pack(side=tk.LEFT, padx=(2, 6))
+
+        ttk.Label(r2, text="Y(mm):").pack(side=tk.LEFT)
+        self.obj_y_var = tk.DoubleVar(value=0.0)
+        ttk.Spinbox(r2, from_=0.0, to=30.0, increment=0.5, textvariable=self.obj_y_var, width=5).pack(side=tk.LEFT, padx=(2, 6))
+
+        ttk.Label(r2, text="크기(px/mm):").pack(side=tk.LEFT)
+        self.obj_size_var = tk.IntVar(value=36)
+        ttk.Spinbox(r2, from_=10, to=160, increment=2, textvariable=self.obj_size_var, width=5).pack(side=tk.LEFT, padx=(2, 6))
+
+        ttk.Label(r2, text="글꼴:").pack(side=tk.LEFT)
+        self.obj_font_var = tk.StringVar(value="[고딕] 맑은 고딕 (Malgun Gothic)")
+        cb_f = ttk.Combobox(r2, textvariable=self.obj_font_var, values=get_fonts_for_category("전체 추천 글꼴"), width=16, state="readonly")
+        cb_f.pack(side=tk.LEFT, padx=(2, 6))
+
+        self.obj_bold_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(r2, text="굵게", variable=self.obj_bold_var).pack(side=tk.LEFT, padx=(0, 6))
+
+        btn_act_box = ttk.Frame(edit_card)
+        btn_act_box.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(btn_act_box, text="➕ 객체 추가", command=self._add_object_from_ui).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(btn_act_box, text="💾 선택 객체 수정", command=self._update_selected_object).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(btn_act_box, text="🗑️ 삭제", command=self._delete_selected_object).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(btn_act_box, text="⬆️ 위로", width=5, command=lambda: self._move_selected_object(-1)).pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Button(btn_act_box, text="⬇️ 아래로", width=6, command=lambda: self._move_selected_object(1)).pack(side=tk.LEFT)
+
+    def _browse_csv_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="CSV 파일 선택",
+            filetypes=[("CSV 파일", "*.csv"), ("텍스트 파일", "*.txt"), ("모든 파일", "*.*")],
+        )
+        if path:
+            self._load_csv_path(path)
+
+    def _load_sample_csv(self) -> None:
+        sample_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sample_data.csv")
+        if os.path.exists(sample_path):
+            self._load_csv_path(sample_path)
+            self._apply_csv_preset("qr_2line")
+
+    def _load_csv_path(self, path: str) -> None:
+        try:
+            with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+                reader = csv.DictReader(f)
+                headers = [h.strip() for h in (reader.fieldnames or []) if h and h.strip()]
+                rows = [row for row in reader]
+        except Exception as e:
+            messagebox.showerror("CSV 열기 오류", f"CSV 파일을 읽을 수 없습니다:\n{e}")
+            return
+
+        if not headers or not rows:
+            messagebox.showwarning("CSV 내용 부족", "CSV 파일에 헤더 또는 데이터 행이 없습니다.")
+            return
+
+        self.csv_path_var.set(path)
+        self.csv_headers = headers
+        self.csv_rows = rows
+        self.csv_current_index = 0
+
+        # Update clickable column tags
+        for w in self.col_tags_box.winfo_children():
+            w.destroy()
+        for h in headers[:8]:
+            btn = ttk.Button(
+                self.col_tags_box,
+                text=f"{{{h}}}",
+                width=max(6, len(h) + 2),
+                command=lambda col_name=h: self._insert_col_tag(col_name),
+            )
+            btn.pack(side=tk.LEFT, padx=1)
+
+        self.csv_status_var.set(f"CSV 로드됨: 총 {len(rows)}개 행 (현재: 1/{len(rows)}행)")
+        if not self.csv_objects:
+            self._apply_csv_preset("qr_2line")
+        else:
+            self._refresh_objects_tree()
+            self.update_preview()
+
+    def _insert_col_tag(self, col_name: str) -> None:
+        cur = self.obj_content_var.get()
+        if not cur or cur == "{품명}":
+            self.obj_content_var.set(f"{{{col_name}}}")
+        else:
+            self.obj_content_var.set(f"{cur} {{{col_name}}}")
+
+    def _step_csv_row(self, delta: int) -> None:
+        if not self.csv_rows:
+            return
+        n = len(self.csv_rows)
+        self.csv_current_index = (self.csv_current_index + delta) % n
+        self.csv_status_var.set(f"CSV 로드됨: 총 {n}개 행 (현재: {self.csv_current_index + 1}/{n}행)")
+        self.update_preview()
+
+    def _refresh_objects_tree(self) -> None:
+        for item in self.obj_tree.get_children():
+            self.obj_tree.delete(item)
+        for idx, obj in enumerate(self.csv_objects):
+            self.obj_tree.insert(
+                "",
+                tk.END,
+                iid=str(idx),
+                values=(
+                    obj.obj_type,
+                    obj.content,
+                    f"{obj.x_mm:.1f}",
+                    f"{obj.y_mm:.1f}",
+                    str(obj.font_size_px),
+                    obj.font_name.split(" ")[0],
+                    "Y" if obj.bold else "-",
+                ),
+            )
+
+    def _on_obj_selected(self) -> None:
+        sel = self.obj_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if 0 <= idx < len(self.csv_objects):
+            obj = self.csv_objects[idx]
+            self.obj_type_var.set(obj.obj_type)
+            self.obj_content_var.set(obj.content)
+            self.obj_x_var.set(obj.x_mm)
+            self.obj_y_var.set(obj.y_mm)
+            self.obj_size_var.set(obj.font_size_px)
+            self.obj_font_var.set(obj.font_name)
+            self.obj_bold_var.set(obj.bold)
+
+    def _add_object_from_ui(self) -> None:
+        obj = LabelObject(
+            obj_type=self.obj_type_var.get(),
+            content=self.obj_content_var.get(),
+            x_mm=float(self.obj_x_var.get()),
+            y_mm=float(self.obj_y_var.get()),
+            font_size_px=int(self.obj_size_var.get()),
+            font_name=self.obj_font_var.get(),
+            bold=bool(self.obj_bold_var.get()),
+        )
+        self.csv_objects.append(obj)
+        self._refresh_objects_tree()
+        self.update_preview()
+
+    def _update_selected_object(self) -> None:
+        sel = self.obj_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if 0 <= idx < len(self.csv_objects):
+            obj = self.csv_objects[idx]
+            obj.obj_type = self.obj_type_var.get()
+            obj.content = self.obj_content_var.get()
+            obj.x_mm = float(self.obj_x_var.get())
+            obj.y_mm = float(self.obj_y_var.get())
+            obj.font_size_px = int(self.obj_size_var.get())
+            obj.font_name = self.obj_font_var.get()
+            obj.bold = bool(self.obj_bold_var.get())
+            self._refresh_objects_tree()
+            self.update_preview()
+
+    def _delete_selected_object(self) -> None:
+        sel = self.obj_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if 0 <= idx < len(self.csv_objects):
+            del self.csv_objects[idx]
+            self._refresh_objects_tree()
+            self.update_preview()
+
+    def _move_selected_object(self, delta: int) -> None:
+        sel = self.obj_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        new_idx = idx + delta
+        if 0 <= new_idx < len(self.csv_objects):
+            self.csv_objects[idx], self.csv_objects[new_idx] = self.csv_objects[new_idx], self.csv_objects[idx]
+            self._refresh_objects_tree()
+            self.obj_tree.selection_set(str(new_idx))
+            self.update_preview()
+
+    def _clear_csv_objects(self) -> None:
+        self.csv_objects.clear()
+        self._refresh_objects_tree()
+        self.update_preview()
+
+    def _apply_csv_preset(self, preset: str) -> None:
+        headers = self.csv_headers or ["ID", "품명", "관리부서", "시리얼", "QRURL"]
+        c1 = headers[0] if len(headers) >= 1 else "ID"
+        c2 = headers[1] if len(headers) >= 2 else "Name"
+        c3 = headers[2] if len(headers) >= 3 else "Dept"
+        c4 = headers[3] if len(headers) >= 4 else "SN"
+        c_qr = next((h for h in headers if "QR" in h.upper() or "URL" in h.upper()), headers[0])
+
+        self.csv_objects.clear()
+        if preset == "qr_2line":
+            self.csv_objects = [
+                LabelObject(obj_type="qr", content=f"{{{c_qr}}}", x_mm=0.0, y_mm=0.2, height_mm=9.5),
+                LabelObject(obj_type="text", content=f"{{{c2}}}", x_mm=11.0, y_mm=0.2, font_size_px=38, bold=True),
+                LabelObject(obj_type="text", content=f"{{{c1}}} · {{{c3}}}", x_mm=11.0, y_mm=5.4, font_size_px=22, bold=False),
+            ]
+        elif preset == "3col":
+            self.csv_objects = [
+                LabelObject(obj_type="text", content=f"{{{c1}}}", x_mm=0.0, y_mm=1.0, font_size_px=34, bold=True),
+                LabelObject(obj_type="vline", content="", x_mm=14.0, y_mm=0.5, height_mm=9.0),
+                LabelObject(obj_type="text", content=f"{{{c2}}}", x_mm=16.0, y_mm=1.0, font_size_px=34, bold=True),
+                LabelObject(obj_type="vline", content="", x_mm=42.0, y_mm=0.5, height_mm=9.0),
+                LabelObject(obj_type="text", content=f"{{{c3}}}", x_mm=44.0, y_mm=1.0, font_size_px=30, bold=False),
+            ]
+        elif preset == "asset":
+            self.csv_objects = [
+                LabelObject(obj_type="text", content=f"[{c1}] {{{c2}}}", x_mm=0.0, y_mm=0.2, font_size_px=36, bold=True),
+                LabelObject(obj_type="hline", content="", x_mm=0.0, y_mm=4.8, width_mm=45.0),
+                LabelObject(obj_type="text", content=f"S/N: {{{c4}}} | {{{c3}}}", x_mm=0.0, y_mm=5.4, font_size_px=22, bold=False),
+                LabelObject(obj_type="qr", content=f"{{{c_qr}}}", x_mm=48.0, y_mm=0.2, height_mm=9.5),
+            ]
+        self._refresh_objects_tree()
+        self.update_preview()
         self._syncing_text = True
         try:
             self.text_editor.delete("1.0", tk.END)
@@ -702,6 +1052,12 @@ class LWC610App:
             return self.last_status.tape_code
         return 4  # Default 12mm
 
+    def _is_csv_tab_active(self) -> bool:
+        try:
+            return self.left_notebook.index(self.left_notebook.select()) == 1
+        except Exception:
+            return False
+
     def build_label_design(self) -> LabelDesign:
         raw_text = self.text_editor.get("1.0", "end-1c")
         try:
@@ -725,6 +1081,9 @@ class LWC610App:
         except Exception:
             line_gap = 8
 
+        # When CSV tab is active and objects are configured, attach objects list
+        objects = list(self.csv_objects) if (self._is_csv_tab_active() and self.csv_objects) else None
+
         return LabelDesign(
             text=raw_text,
             font_name=self.font_name_var.get(),
@@ -745,11 +1104,18 @@ class LWC610App:
             fixed_length_mm=max(0.0, fixed_mm),
             margin_mm=max(0.0, min(21.0, margin_mm)),
             lead_offset_mm=max(0.0, min(15.0, lead_offset_mm)),
+            objects=objects,
         )
+
+    def _get_active_row_data(self) -> Dict[str, str]:
+        if self.csv_rows and 0 <= self.csv_current_index < len(self.csv_rows):
+            return self.csv_rows[self.csv_current_index]
+        return {h: f"[{h}]" for h in (self.csv_headers or ["ID", "품명", "관리부서", "시리얼", "QRURL"])}
 
     def update_preview(self) -> None:
         design = self.build_label_design()
-        self.current_bitmap = render_label_bitmap(design)
+        row_data = self._get_active_row_data() if self._is_csv_tab_active() else None
+        self.current_bitmap = render_label_bitmap(design, row_data=row_data)
         self.current_preview = render_preview_image(
             self.current_bitmap,
             tape_code=design.tape_code,
@@ -765,10 +1131,11 @@ class LWC610App:
         total_mm = dots_to_mm(total_dots)
         tape_mm = TAPE_WIDTH_MM.get(design.tape_code, 12)
 
+        csv_tag = f" [CSV 행 {self.csv_current_index + 1}/{len(self.csv_rows)}]" if (self._is_csv_tab_active() and self.csv_rows) else ""
         self.dimensions_var.set(
-            f"테이프: {tape_mm}mm (인쇄폭 {h_dots} dots)  |  "
+            f"테이프: {tape_mm}mm (인쇄폭 {h_dots} dots){csv_tag}  |  "
             f"인쇄 영역: {content_mm:.1f}mm ({w_dots} dots)  |  "
-            f"총 배출 길이(여백 포함): 약 {total_mm:.1f}mm ({total_dots} dots)"
+            f"총 배출 길이: 약 {total_mm:.1f}mm"
         )
         self._redraw_canvas_image()
 
@@ -928,6 +1295,78 @@ class LWC610App:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def print_csv_batch_async(self) -> None:
+        """Batch print all rows loaded from the CSV file."""
+        if self._busy:
+            return
+        if not self.csv_rows:
+            messagebox.showinfo("CSV 데이터 없음", "먼저 CSV 파일을 불러오거나 [샘플 CSV 로드]를 클릭하세요.")
+            return
+
+        total_rows = len(self.csv_rows)
+        confirm = messagebox.askyesno(
+            "CSV 다중 출력 확인",
+            f"CSV 데이터 총 {total_rows}개의 라벨을 순차적으로 인쇄하시겠습니까?\n\n"
+            f"프린터: {self._get_selected_port()}\n"
+            f"테이프: {self.tape_info_var.get()}",
+        )
+        if not confirm:
+            return
+
+        port = self._get_selected_port()
+        cut = bool(self.cut_var.get())
+        density = int(self.density_var.get())
+        margin_mm = float(self.margin_mm_var.get())
+        lead_offset_mm = float(self.lead_offset_mm_var.get())
+        copies = int(self.copies_var.get())
+        design = self.build_label_design()
+        rows_to_print = list(self.csv_rows)
+
+        self._set_busy(True, f"CSV 다중 인쇄 시작 (총 {total_rows}건)...")
+        self.progress_var.set(2.0)
+
+        def worker() -> None:
+            try:
+                printer = LWC610Printer(port=port)
+                last_st: Optional[PrinterStatus] = None
+                for idx, row in enumerate(rows_to_print):
+                    row_num = idx + 1
+                    base_frac = idx / total_rows
+
+                    def progress_cb(frac: float, msg: str, r_idx=row_num) -> None:
+                        overall = base_frac + (frac / total_rows)
+                        self.root.after(
+                            0,
+                            lambda o=overall, m=msg, r=r_idx: (
+                                self.progress_var.set(max(0.0, min(100.0, o * 100.0))),
+                                self.progress_text_var.set(f"[{r}/{total_rows}건] {m}"),
+                            ),
+                        )
+
+                    bmp = render_label_bitmap(design, row_data=row)
+                    last_st = printer.print_bitmap(
+                        label_image=bmp,
+                        cut=cut,
+                        density=density,
+                        margin_mm=margin_mm,
+                        lead_offset_mm=lead_offset_mm,
+                        copies=copies,
+                        progress_callback=progress_cb,
+                    )
+
+                self.root.after(0, lambda: self._on_csv_batch_done(last_st, total_rows))
+            except Exception as exc:
+                self.root.after(0, lambda: self._on_job_error("CSV 일괄 인쇄", exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_csv_batch_done(self, status: Optional[PrinterStatus], total_rows: int) -> None:
+        if status:
+            self._apply_status_to_ui(status)
+        self.progress_var.set(100.0)
+        self._set_busy(False, f"CSV {total_rows}건 다중 인쇄 완료!")
+        messagebox.showinfo("인쇄 완료", f"CSV 데이터 총 {total_rows}건의 라벨 출력이 완료되었습니다.")
+
     def _on_print_done(self, status: PrinterStatus) -> None:
         self._apply_status_to_ui(status)
         self.progress_var.set(100.0)
@@ -955,6 +1394,53 @@ def run_cli(args: argparse.Namespace) -> int:
         print(f"{args.port} 테이프 피드 실행 중 (cut={not args.no_cut})...")
         st = printer.feed_tape(cut=not args.no_cut)
         print(f"완료: {st.status_text} / {st.error_text}")
+        return 0
+
+    # Render label bitmap if text, line2, csv, qr, or image is specified
+    if args.csv_batch:
+        if not os.path.exists(args.csv_batch):
+            print(f"오류: CSV 파일을 찾을 수 없습니다: {args.csv_batch}")
+            return 1
+        with open(args.csv_batch, "r", encoding="utf-8-sig", errors="replace") as f:
+            reader = csv.DictReader(f)
+            headers = [h.strip() for h in (reader.fieldnames or [])]
+            rows = [r for r in reader]
+
+        if not rows:
+            print("오류: CSV 데이터 행이 없습니다.")
+            return 1
+
+        c1 = headers[0] if len(headers) >= 1 else "ID"
+        c2 = headers[1] if len(headers) >= 2 else "Name"
+        c3 = headers[2] if len(headers) >= 3 else "Dept"
+        c_qr = next((h for h in headers if "QR" in h.upper() or "URL" in h.upper()), headers[0])
+
+        objs = [
+            LabelObject(obj_type="qr", content=f"{{{c_qr}}}", x_mm=0.0, y_mm=0.2, height_mm=9.5),
+            LabelObject(obj_type="text", content=f"{{{c2}}}", x_mm=11.0, y_mm=0.2, font_size_px=38, bold=True),
+            LabelObject(obj_type="text", content=f"{{{c1}}} · {{{c3}}}", x_mm=11.0, y_mm=5.4, font_size_px=22, bold=False),
+        ]
+        tape_code = args.tape_code or 4
+        design = LabelDesign(tape_code=tape_code, objects=objs, frame_style=args.frame)
+
+        print(f"CSV 일괄 인쇄 시작: 총 {len(rows)}개 라벨...")
+        for idx, r in enumerate(rows):
+            bmp = render_label_bitmap(design, row_data=r)
+            if args.save_preview and idx == 0:
+                prev = render_preview_image(bmp, tape_code=tape_code, margin_mm=args.margin, lead_offset_mm=args.lead_offset)
+                prev.save(args.save_preview)
+                print(f"첫 번째 라벨 미리보기 저장됨: {args.save_preview}")
+            if not args.offline:
+                print(f"[{idx+1}/{len(rows)}] 인쇄 중: {r}")
+                printer.print_bitmap(
+                    label_image=bmp,
+                    cut=not args.no_cut,
+                    density=args.density,
+                    margin_mm=args.margin,
+                    lead_offset_mm=args.lead_offset,
+                    copies=args.copies,
+                )
+        print("CSV 일괄 인쇄 완료!")
         return 0
 
     # Render label bitmap if text, line2, qr, or image is specified
@@ -1038,6 +1524,7 @@ def main() -> None:
     parser.add_argument("--port", default="COM4", help="블루투스 시리얼 포트 (기본값: COM4)")
     parser.add_argument("--status", action="store_true", help="프린터 실시간 상태 및 테이프 폭 조회")
     parser.add_argument("--feed", action="store_true", help="테이프 피드 (& 커트) 실행")
+    parser.add_argument("--csv-batch", type=str, default="", help="CSV 파일 경로를 지정하여 다중 일괄 인쇄")
     parser.add_argument("--text", type=str, default="", help="인쇄할 라벨 텍스트 (1째 줄 또는 \\n 포함 텍스트)")
     parser.add_argument("--line2", type=str, default="", help="2째 줄(하단)에 인쇄할 라벨 텍스트")
     parser.add_argument("--line-ratio", choices=["1:1", "6:4", "4:6"], default="1:1", help="2줄 크기 비율 (1:1=동일, 6:4=1줄크게, 4:6=2줄크게)")
@@ -1064,7 +1551,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Run CLI if any CLI action flag was passed
-    if any([args.status, args.feed, args.text, args.line2, args.qr, args.image, args.save_preview]):
+    if any([args.status, args.feed, args.csv_batch, args.text, args.line2, args.qr, args.image, args.save_preview]):
         rc = run_cli(args)
         if rc >= 0:
             sys.exit(rc)
