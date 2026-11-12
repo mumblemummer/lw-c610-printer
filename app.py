@@ -35,6 +35,7 @@ from lwc610_protocol import (
 )
 from lwc610_render import (
     FRAME_STYLES,
+    LINE_RATIO_MODES,
     WINDOWS_FONT_MAP,
     LabelDesign,
     render_label_bitmap,
@@ -72,6 +73,13 @@ class LWC610App:
         self.invert_var = tk.BooleanVar(value=False)
         self.align_var = tk.StringVar(value="center")
         self.frame_var = tk.StringVar(value="없음 (None)")
+
+        self.line1_var = tk.StringVar(value="안녕하세요 LW-C610")
+        self.line2_var = tk.StringVar(value="")
+        self.line_ratio_var = tk.StringVar(value=LINE_RATIO_MODES[0])
+        self.line_gap_var = tk.IntVar(value=8)
+        self.line_divider_var = tk.BooleanVar(value=False)
+        self._syncing_text = False
 
         self.qr_text_var = tk.StringVar(value="")
         self.qr_pos_var = tk.StringVar(value="left")
@@ -178,33 +186,84 @@ class LWC610App:
         right_col.grid(row=0, column=1, sticky="nsew")
 
         # --- LEFT COLUMN: Text, Font, QR/Image, and Print Settings ---
-        # 1. Text Input Card
-        text_card = ttk.LabelFrame(left_col, text="1. 라벨 텍스트 입력 (여러 줄 가능)", padding=10)
+        # 1. Text Input Card (1-line / 2-line / multi-line)
+        text_card = ttk.LabelFrame(left_col, text="1. 라벨 텍스트 입력 (1줄 / 2줄 전용 입력 & 다중 행)", padding=10)
         text_card.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
         tpl_bar = ttk.Frame(text_card)
         tpl_bar.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(tpl_bar, text="빠른 템플릿:").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(tpl_bar, text="이름표", width=7, command=lambda: self._apply_template("name")).pack(side=tk.LEFT, padx=2)
-        ttk.Button(tpl_bar, text="장비/케이블", width=10, command=lambda: self._apply_template("cable")).pack(side=tk.LEFT, padx=2)
-        ttk.Button(tpl_bar, text="보관/날짜", width=9, command=lambda: self._apply_template("date")).pack(side=tk.LEFT, padx=2)
-        ttk.Button(tpl_bar, text="QR 안내", width=8, command=lambda: self._apply_template("qr")).pack(side=tk.LEFT, padx=2)
+        ttk.Label(tpl_bar, text="빠른 템플릿:").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(tpl_bar, text="1줄 이름표", width=9, command=lambda: self._apply_template("name")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tpl_bar, text="2줄 라벨", width=8, command=lambda: self._apply_template("twoline")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tpl_bar, text="2줄+구분선", width=9, command=lambda: self._apply_template("twoline_div")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tpl_bar, text="보관/날짜", width=8, command=lambda: self._apply_template("date")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tpl_bar, text="QR 안내", width=7, command=lambda: self._apply_template("qr")).pack(side=tk.LEFT, padx=2)
         ttk.Button(tpl_bar, text="지우기", width=6, command=lambda: self._apply_template("clear")).pack(side=tk.RIGHT)
 
+        # Dedicated 1st Line & 2nd Line quick entry boxes
+        two_line_box = ttk.Frame(text_card)
+        two_line_box.pack(fill=tk.X, pady=(0, 6))
+        two_line_box.columnconfigure(1, weight=1)
+
+        ttk.Label(two_line_box, text="1째 줄 (상단):", font=("Malgun Gothic", 9, "bold")).grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.entry_line1 = ttk.Entry(two_line_box, textvariable=self.line1_var, font=("Malgun Gothic", 10))
+        self.entry_line1.grid(row=0, column=1, sticky="ew", padx=(6, 0), pady=2)
+        self.entry_line1.bind("<KeyRelease>", lambda _e: self._on_line_entries_changed())
+
+        ttk.Label(two_line_box, text="2째 줄 (하단):", font=("Malgun Gothic", 9, "bold")).grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.entry_line2 = ttk.Entry(two_line_box, textvariable=self.line2_var, font=("Malgun Gothic", 10))
+        self.entry_line2.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=2)
+        self.entry_line2.bind("<KeyRelease>", lambda _e: self._on_line_entries_changed())
+
+        # 2-Line Layout Options Row (Ratio, Line Gap, Divider)
+        line_opt_bar = ttk.Frame(text_card)
+        line_opt_bar.pack(fill=tk.X, pady=(2, 6))
+        ttk.Label(line_opt_bar, text="2줄 비율:").pack(side=tk.LEFT)
+        ratio_combo = ttk.Combobox(
+            line_opt_bar,
+            textvariable=self.line_ratio_var,
+            values=LINE_RATIO_MODES,
+            state="readonly",
+            width=22,
+        )
+        ratio_combo.pack(side=tk.LEFT, padx=(4, 10))
+        ratio_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_preview())
+
+        ttk.Label(line_opt_bar, text="줄 간격(dots):").pack(side=tk.LEFT)
+        spin_line_gap = ttk.Spinbox(
+            line_opt_bar,
+            from_=0,
+            to=40,
+            increment=2,
+            textvariable=self.line_gap_var,
+            width=4,
+            command=self.update_preview,
+        )
+        spin_line_gap.pack(side=tk.LEFT, padx=(4, 10))
+        spin_line_gap.bind("<KeyRelease>", lambda _e: self.update_preview())
+
+        ttk.Checkbutton(
+            line_opt_bar,
+            text="줄 사이 구분선",
+            variable=self.line_divider_var,
+            command=self.update_preview,
+        ).pack(side=tk.LEFT)
+
+        ttk.Label(text_card, text="전체 텍스트 편집 (엔터로 2줄/3줄 이상 자유 입력 가능):", foreground="#475569").pack(anchor=tk.W, pady=(0, 2))
         self.text_editor = tk.Text(
             text_card,
-            height=4,
-            font=("Malgun Gothic", 12),
+            height=3,
+            font=("Malgun Gothic", 11),
             undo=True,
             wrap=tk.NONE,
             relief=tk.SOLID,
             borderwidth=1,
             padx=6,
-            pady=6,
+            pady=4,
         )
         self.text_editor.pack(fill=tk.BOTH, expand=True)
         self.text_editor.insert("1.0", "안녕하세요 LW-C610")
-        self.text_editor.bind("<KeyRelease>", lambda _e: self.update_preview())
+        self.text_editor.bind("<KeyRelease>", lambda _e: self._on_text_editor_changed())
 
         # 2. Font & Frame Style Card
         style_card = ttk.LabelFrame(left_col, text="2. 글꼴 및 테두리 스타일", padding=10)
@@ -489,30 +548,87 @@ class LWC610App:
         self.image_path_var.set("")
         self.update_preview()
 
+    def _on_line_entries_changed(self) -> None:
+        if self._syncing_text:
+            return
+        self._syncing_text = True
+        try:
+            l1 = self.line1_var.get()
+            l2 = self.line2_var.get()
+            existing_lines = self.text_editor.get("1.0", "end-1c").splitlines()
+            extra_lines = existing_lines[2:] if len(existing_lines) > 2 else []
+            new_lines = [l1]
+            if l2 or extra_lines:
+                new_lines.append(l2)
+            new_lines.extend(extra_lines)
+            combined = "\n".join(new_lines)
+            self.text_editor.delete("1.0", tk.END)
+            self.text_editor.insert("1.0", combined)
+        finally:
+            self._syncing_text = False
+        self.update_preview()
+
+    def _on_text_editor_changed(self) -> None:
+        if self._syncing_text:
+            return
+        self._syncing_text = True
+        try:
+            lines = self.text_editor.get("1.0", "end-1c").splitlines()
+            self.line1_var.set(lines[0] if len(lines) >= 1 else "")
+            self.line2_var.set(lines[1] if len(lines) >= 2 else "")
+        finally:
+            self._syncing_text = False
+        self.update_preview()
+
+    def _set_text_lines(self, text: str) -> None:
+        self._syncing_text = True
+        try:
+            self.text_editor.delete("1.0", tk.END)
+            self.text_editor.insert("1.0", text)
+            lines = text.splitlines()
+            self.line1_var.set(lines[0] if len(lines) >= 1 else "")
+            self.line2_var.set(lines[1] if len(lines) >= 2 else "")
+        finally:
+            self._syncing_text = False
+
     def _apply_template(self, kind: str) -> None:
         today = datetime.date.today().strftime("%Y-%m-%d")
-        self.text_editor.delete("1.0", tk.END)
         if kind == "name":
-            self.text_editor.insert("1.0", "홍 길 동")
+            self._set_text_lines("홍 길 동")
             self.frame_var.set("둥근 사각형 (Rounded)")
+            self.line_divider_var.set(False)
             self.qr_text_var.set("")
-        elif kind == "cable":
-            self.text_editor.insert("1.0", "WAN-01 / 192.168.1.1")
+        elif kind == "twoline":
+            self._set_text_lines("서버실 메인 스위치\n192.168.1.1 (Gi0/1)")
+            self.frame_var.set("둥근 사각형 (Rounded)")
+            self.line_ratio_var.set(LINE_RATIO_MODES[1])  # 1줄 크게 (6:4)
+            self.line_divider_var.set(False)
+            self.qr_text_var.set("")
+        elif kind == "twoline_div":
+            self._set_text_lines("자산번호: IT-2026-01\n관리부서: 인프라팀")
             self.frame_var.set("직사각형 (Rectangle)")
+            self.line_ratio_var.set(LINE_RATIO_MODES[0])  # 동일 크기 (1:1)
+            self.line_divider_var.set(True)
             self.qr_text_var.set("")
         elif kind == "date":
-            self.text_editor.insert("1.0", f"보관일: {today}\n개봉후 냉장보관")
+            self._set_text_lines(f"보관일: {today}\n개봉후 냉장보관")
             self.frame_var.set("없음 (None)")
+            self.line_ratio_var.set(LINE_RATIO_MODES[0])
+            self.line_divider_var.set(False)
             self.qr_text_var.set("")
         elif kind == "qr":
-            self.text_editor.insert("1.0", "Epson LW-C610\n스캔하여 확인")
+            self._set_text_lines("Epson LW-C610\n스캔하여 확인")
             self.frame_var.set("둥근 사각형 (Rounded)")
+            self.line_ratio_var.set(LINE_RATIO_MODES[0])
+            self.line_divider_var.set(False)
             self.qr_text_var.set("https://epson.co.kr")
             self.qr_pos_var.set("left")
         elif kind == "clear":
+            self._set_text_lines("")
             self.qr_text_var.set("")
             self.image_path_var.set("")
             self.frame_var.set("없음 (None)")
+            self.line_divider_var.set(False)
         self.update_preview()
 
     def _resolve_active_tape_code(self) -> int:
@@ -550,6 +666,10 @@ class LWC610App:
             fsize = int(self.font_size_var.get())
         except Exception:
             fsize = 84
+        try:
+            line_gap = int(self.line_gap_var.get())
+        except Exception:
+            line_gap = 8
 
         return LabelDesign(
             text=raw_text,
@@ -560,6 +680,9 @@ class LWC610App:
             invert_colors=bool(self.invert_var.get()),
             h_align=self.align_var.get(),
             frame_style=self.frame_var.get(),
+            line_ratio_mode=self.line_ratio_var.get(),
+            line_gap_dots=max(0, min(60, line_gap)),
+            line_divider=bool(self.line_divider_var.get()),
             qr_text=self.qr_text_var.get(),
             qr_position=self.qr_pos_var.get(),
             image_path=self.image_path_var.get(),
@@ -780,8 +903,8 @@ def run_cli(args: argparse.Namespace) -> int:
         print(f"완료: {st.status_text} / {st.error_text}")
         return 0
 
-    # Render label bitmap if text, qr, or image is specified
-    if args.text or args.qr or args.image or args.save_preview:
+    # Render label bitmap if text, line2, qr, or image is specified
+    if args.text or args.line2 or args.qr or args.image or args.save_preview:
         tape_code = args.tape_code
         if tape_code == 0 and not args.offline:
             try:
@@ -794,8 +917,18 @@ def run_cli(args: argparse.Namespace) -> int:
         if tape_code not in TAPE_PRINTABLE_DOTS:
             tape_code = 4
 
+        full_text = (args.text or "").replace("\\n", "\n")
+        if args.line2:
+            full_text = f"{full_text}\n{args.line2}" if full_text else args.line2
+
+        ratio_map = {
+            "1:1": LINE_RATIO_MODES[0],
+            "6:4": LINE_RATIO_MODES[1],
+            "4:6": LINE_RATIO_MODES[2],
+        }
+
         design = LabelDesign(
-            text=(args.text or "").replace("\\n", "\n"),
+            text=full_text,
             font_name=args.font,
             auto_font_size=(args.font_size <= 0),
             font_size_px=args.font_size if args.font_size > 0 else 84,
@@ -803,6 +936,9 @@ def run_cli(args: argparse.Namespace) -> int:
             invert_colors=args.invert,
             h_align=args.align,
             frame_style=args.frame,
+            line_ratio_mode=ratio_map.get(args.line_ratio, LINE_RATIO_MODES[0]),
+            line_gap_dots=args.line_gap,
+            line_divider=args.line_divider,
             qr_text=args.qr or "",
             qr_position=args.qr_pos,
             image_path=args.image or "",
@@ -848,7 +984,11 @@ def main() -> None:
     parser.add_argument("--port", default="COM4", help="블루투스 시리얼 포트 (기본값: COM4)")
     parser.add_argument("--status", action="store_true", help="프린터 실시간 상태 및 테이프 폭 조회")
     parser.add_argument("--feed", action="store_true", help="테이프 피드 (& 커트) 실행")
-    parser.add_argument("--text", type=str, default="", help="인쇄할 라벨 텍스트 (줄바꿈은 \\n)")
+    parser.add_argument("--text", type=str, default="", help="인쇄할 라벨 텍스트 (1째 줄 또는 \\n 포함 텍스트)")
+    parser.add_argument("--line2", type=str, default="", help="2째 줄(하단)에 인쇄할 라벨 텍스트")
+    parser.add_argument("--line-ratio", choices=["1:1", "6:4", "4:6"], default="1:1", help="2줄 크기 비율 (1:1=동일, 6:4=1줄크게, 4:6=2줄크게)")
+    parser.add_argument("--line-gap", type=int, default=8, help="줄 간격 dots (기본값: 8)")
+    parser.add_argument("--line-divider", action="store_true", help="줄 사이 가로 구분선 표시")
     parser.add_argument("--qr", type=str, default="", help="인쇄할 QR 코드 데이터/URL")
     parser.add_argument("--qr-pos", choices=["left", "right", "only"], default="left", help="QR 코드 위치")
     parser.add_argument("--image", type=str, default="", help="인쇄할 이미지 경로")
@@ -870,7 +1010,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Run CLI if any CLI action flag was passed
-    if any([args.status, args.feed, args.text, args.qr, args.image, args.save_preview]):
+    if any([args.status, args.feed, args.text, args.line2, args.qr, args.image, args.save_preview]):
         rc = run_cli(args)
         if rc >= 0:
             sys.exit(rc)

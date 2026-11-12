@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -49,6 +49,12 @@ FRAME_STYLES = [
     "캡슐형 (Capsule)",
 ]
 
+LINE_RATIO_MODES = [
+    "동일 크기 (1:1)",
+    "1줄 크게 · 제목+부제 (6:4)",
+    "2줄 크게 · 부제+본문 (4:6)",
+]
+
 
 @dataclass
 class LabelDesign:
@@ -61,6 +67,9 @@ class LabelDesign:
     invert_colors: bool = False
     h_align: str = "center"  # "left", "center", "right"
     frame_style: str = "없음 (None)"
+    line_ratio_mode: str = "동일 크기 (1:1)"
+    line_gap_dots: int = 8
+    line_divider: bool = False
     qr_text: str = ""
     qr_position: str = "left"  # "left", "right", "only"
     image_path: str = ""
@@ -94,44 +103,177 @@ def load_font(font_name: str, size_px: int, bold: bool = False) -> ImageFont.Fre
     return ImageFont.load_default()
 
 
-def _render_text_tight(
-    text: str,
+def _render_single_line_tight(
+    line_text: str,
     font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
-    align: str = "center",
-    spacing: int = 6,
 ) -> Optional[Image.Image]:
     """
-    Render multiline text onto a generous scratch canvas and crop to the exact
-    ink bounding box (so no left/right/top/bottom glyph overhang is ever clipped).
-    Returns an 'L' image (white=255 background, black=0 ink).
+    Render a single line of text onto a generous scratch canvas and crop to the
+    exact ink bounding box (eliminating TrueType top/bottom internal leading and
+    preventing any left/right glyph overhang clipping).
     """
-    if not text or not text.strip():
+    if not line_text or not line_text.strip():
         return None
 
     dummy = Image.new("L", (16, 16), 255)
     ddraw = ImageDraw.Draw(dummy)
-    bbox = ddraw.multiline_textbbox((0, 0), text, font=font, spacing=spacing, align=align)
+    bbox = ddraw.textbbox((0, 0), line_text, font=font)
     est_w = max(16, bbox[2] - bbox[0])
     est_h = max(16, bbox[3] - bbox[1])
 
     pad = 64
     scratch = Image.new("L", (est_w + pad * 2, est_h + pad * 2), 255)
     sdraw = ImageDraw.Draw(scratch)
-    sdraw.multiline_text(
-        (pad - bbox[0], pad - bbox[1]),
-        text,
-        fill=0,
-        font=font,
-        spacing=spacing,
-        align=align if align in ("left", "center", "right") else "center",
-    )
+    sdraw.text((pad - bbox[0], pad - bbox[1]), line_text, fill=0, font=font)
 
-    # Invert to find exact non-white ink bounding box
     inv = ImageOps.invert(scratch)
     ink_box = inv.getbbox()
     if ink_box is None:
         return None
     return scratch.crop(ink_box)
+
+
+def _stack_line_images(
+    line_imgs: List[Image.Image],
+    align: str = "center",
+    line_gap_dots: int = 8,
+    line_divider: bool = False,
+) -> Optional[Image.Image]:
+    """
+    Stack per-line tight ink images vertically with exact `line_gap_dots` spacing
+    and optional horizontal divider line between lines.
+    """
+    if not line_imgs:
+        return None
+    if len(line_imgs) == 1:
+        return line_imgs[0]
+
+    gap = max(0, int(line_gap_dots))
+    div_extra = 4 if line_divider else 0
+    eff_gap = max(gap, 6) + div_extra if line_divider else gap
+
+    max_w = max(img.width for img in line_imgs)
+    total_h = sum(img.height for img in line_imgs) + eff_gap * (len(line_imgs) - 1)
+
+    out = Image.new("L", (max_w, max(1, total_h)), 255)
+    draw = ImageDraw.Draw(out)
+
+    cur_y = 0
+    for idx, img in enumerate(line_imgs):
+        if align == "left":
+            x = 0
+        elif align == "right":
+            x = max_w - img.width
+        else:
+            x = (max_w - img.width) // 2
+        out.paste(img, (x, cur_y))
+        cur_y += img.height
+
+        if idx < len(line_imgs) - 1:
+            if line_divider:
+                mid_y = cur_y + eff_gap // 2
+                draw.line([(0, mid_y), (max_w - 1, mid_y)], fill=0, width=2)
+            cur_y += eff_gap
+
+    return out
+
+
+def _render_text_tight(
+    text: str,
+    font_name: str,
+    bold: bool,
+    avail_height: int,
+    auto_font_size: bool = True,
+    manual_font_size_px: int = 84,
+    align: str = "center",
+    line_ratio_mode: str = "동일 크기 (1:1)",
+    line_gap_dots: int = 8,
+    line_divider: bool = False,
+) -> Optional[Image.Image]:
+    """
+    Render 1-line, 2-line, or multi-line text with tight per-line ink cropping so
+    2-line labels maximize vertical tape usage without TrueType internal leading waste.
+    Supports proportional 2-line sizing (1:1, 6:4 title+subtitle, 4:6 subtitle+main).
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return None
+
+    n_lines = len(lines)
+    gap = max(0, int(line_gap_dots))
+    eff_gap = (max(gap, 6) + 4) if (line_divider and n_lines > 1) else gap
+    total_gaps = eff_gap * (n_lines - 1)
+    usable_ink_h = max(12 * n_lines, avail_height - 2 - total_gaps)
+
+    # Determine height share per line when 2 lines use 6:4 or 4:6 ratio
+    weights: List[float] = [1.0 / n_lines] * n_lines
+    if n_lines == 2:
+        if "6:4" in line_ratio_mode or "1줄 크게" in line_ratio_mode:
+            weights = [0.60, 0.40]
+        elif "4:6" in line_ratio_mode or "2줄 크게" in line_ratio_mode:
+            weights = [0.40, 0.60]
+
+    use_weighted_lines = n_lines == 2 and weights[0] != weights[1]
+
+    if not auto_font_size:
+        line_imgs: List[Image.Image] = []
+        for idx, ln in enumerate(lines):
+            scale = (weights[idx] / 0.5) if use_weighted_lines else 1.0
+            fsize = max(10, int(round(manual_font_size_px * scale)))
+            font = load_font(font_name, fsize, bold=bold)
+            img = _render_single_line_tight(ln, font)
+            if img is not None:
+                line_imgs.append(img)
+        return _stack_line_images(line_imgs, align=align, line_gap_dots=gap, line_divider=line_divider)
+
+    # Auto-fit mode:
+    if use_weighted_lines:
+        # Binary-search each line independently to fit its allocated vertical share
+        line_imgs = []
+        for idx, ln in enumerate(lines):
+            target_h = max(12, int(usable_ink_h * weights[idx]))
+            best_img: Optional[Image.Image] = None
+            lo, hi = 10, max(16, int(target_h * 1.6))
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                f_test = load_font(font_name, mid, bold=bold)
+                cand = _render_single_line_tight(ln, f_test)
+                if cand is not None and cand.height <= target_h:
+                    best_img = cand
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            if best_img is None:
+                best_img = _render_single_line_tight(ln, load_font(font_name, 12, bold=bold))
+            if best_img is not None:
+                line_imgs.append(best_img)
+        return _stack_line_images(line_imgs, align=align, line_gap_dots=gap, line_divider=line_divider)
+
+    # Uniform font size across all lines (1:1): binary-search a single font size
+    # whose stacked tight-ink height fits within avail_height - 2
+    best_stack: Optional[Image.Image] = None
+    lo, hi = 10, max(16, int((usable_ink_h / n_lines) * 1.65))
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        f_test = load_font(font_name, mid, bold=bold)
+        cand_imgs = []
+        for ln in lines:
+            c = _render_single_line_tight(ln, f_test)
+            if c is not None:
+                cand_imgs.append(c)
+        stacked = _stack_line_images(cand_imgs, align=align, line_gap_dots=gap, line_divider=line_divider)
+        if stacked is not None and stacked.height <= avail_height - 2:
+            best_stack = stacked
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    if best_stack is None:
+        f_min = load_font(font_name, 12, bold=bold)
+        cand_imgs = [c for c in (_render_single_line_tight(ln, f_min) for ln in lines) if c is not None]
+        best_stack = _stack_line_images(cand_imgs, align=align, line_gap_dots=gap, line_divider=line_divider)
+
+    return best_stack
 
 
 def _make_qr_bitmap(qr_data: str, target_height: int) -> Optional[Image.Image]:
@@ -196,32 +338,22 @@ def render_label_bitmap(design: LabelDesign) -> Image.Image:
     qr_img = _make_qr_bitmap(design.qr_text, avail_height) if design.qr_text.strip() else None
     custom_img = _load_custom_image(design.image_path, avail_height, dither=design.image_dither)
 
-    # 2. Text measurement & auto-sizing via exact ink bounding box
+    # 2. Text measurement & auto-sizing via exact per-line ink bounding box
     text_str = "" if (qr_img is not None and design.qr_position == "only") else design.text
-    line_count = max(1, len(text_str.splitlines())) if text_str.strip() else 1
-    line_spacing = max(2, avail_height // (8 * line_count))
-
     text_img: Optional[Image.Image] = None
     if text_str.strip():
-        if design.auto_font_size:
-            best_size = 12
-            lo, hi = 10, max(14, int(avail_height * 1.15))
-            while lo <= hi:
-                mid = (lo + hi) // 2
-                f_test = load_font(design.font_name, mid, bold=design.bold)
-                t_cand = _render_text_tight(text_str, f_test, align=design.h_align, spacing=line_spacing)
-                if t_cand is not None and t_cand.height <= avail_height - 2:
-                    best_size = mid
-                    text_img = t_cand
-                    lo = mid + 1
-                else:
-                    hi = mid - 1
-            if text_img is None:
-                font = load_font(design.font_name, best_size, bold=design.bold)
-                text_img = _render_text_tight(text_str, font, align=design.h_align, spacing=line_spacing)
-        else:
-            font = load_font(design.font_name, design.font_size_px, bold=design.bold)
-            text_img = _render_text_tight(text_str, font, align=design.h_align, spacing=line_spacing)
+        text_img = _render_text_tight(
+            text=text_str,
+            font_name=design.font_name,
+            bold=design.bold,
+            avail_height=avail_height,
+            auto_font_size=design.auto_font_size,
+            manual_font_size_px=design.font_size_px,
+            align=design.h_align,
+            line_ratio_mode=design.line_ratio_mode,
+            line_gap_dots=design.line_gap_dots,
+            line_divider=design.line_divider,
+        )
 
     text_w = text_img.width if text_img is not None else 0
 
